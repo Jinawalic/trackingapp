@@ -14,7 +14,16 @@ export async function GET(req: Request) {
     const archivedOnly = new URL(req.url).searchParams.get("archived") === "true";
 
     // Fetch products that belong to the user
-    const products = await prisma.product.findMany({
+    const products: Array<{
+      id: string;
+      trackingId: string | null;
+      blockchainId: string | null;
+      name: string;
+      owner: { walletAddress: string };
+      ipfsHash: string;
+      status: string;
+      archived: boolean;
+    }> = await prisma.product.findMany({
       where: {
         archived: archivedOnly,
         owner: {
