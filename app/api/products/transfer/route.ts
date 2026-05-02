@@ -3,7 +3,7 @@ import prisma from "@/lib/prisma";
 
 export async function PUT(req: Request) {
   try {
-    const { productId, newOwnerAddress, transactionHash, blockchainId } =
+    const { productId, newOwnerAddress, transactionHash, blockchainId, newOwnerRole } =
       await req.json();
 
     if (!productId || !newOwnerAddress) {
@@ -18,12 +18,16 @@ export async function PUT(req: Request) {
     });
 
     if (!newOwner) {
-      // Create user if not exists. Default role is 2 (Distributor) for simplicity, 
-      // but in a real app this might be more dynamic.
+      const safeRole =
+        typeof newOwnerRole === "number" && [1, 2, 3, 4].includes(newOwnerRole)
+          ? newOwnerRole
+          : 2;
+
+      // Create user if not exists.
       newOwner = await prisma.user.create({
         data: {
           walletAddress: normalizedAddress,
-          role: 2, 
+          role: safeRole,
         },
       });
     }

@@ -16,6 +16,12 @@ type ProductItem = {
   archived?: boolean;
 };
 
+type ToastItem = {
+  id: number;
+  type: "success" | "error" | "info";
+  message: string;
+};
+
 function Dashboard() {
   const searchParams = useSearchParams();
   const initialRole = parseInt(searchParams.get("role") || "1");
@@ -31,8 +37,18 @@ function Dashboard() {
   const [viewArchive, setViewArchive] = useState(false);
   const [archiveBusyDbId, setArchiveBusyDbId] = useState<string | null>(null);
   const [selectedProductDbId, setSelectedProductDbId] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [isMarkingSold, setIsMarkingSold] = useState<string | null>(null);
 
   const [transferRecipient, setTransferRecipient] = useState<{ [key: string]: string }>({});
+
+  const pushToast = (message: string, type: ToastItem["type"] = "info") => {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    setToasts((prev) => [...prev, { id, type, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 3200);
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -96,6 +112,20 @@ function Dashboard() {
     fetchUserRoleAndProducts();
   }, [userWallet, viewArchive]);
 
+  const refreshProducts = async () => {
+    if (!userWallet) return;
+    const prodRes = await fetch(
+      `/api/products?address=${userWallet}&archived=${viewArchive}`
+    );
+    if (!prodRes.ok) return;
+    const prodData = await prodRes.json();
+    const products = (prodData.products || []) as ProductItem[];
+    setMyProducts(products);
+    setSelectedProductDbId((prev) =>
+      prev && products.some((p) => p.dbId === prev) ? prev : null
+    );
+  };
+
   const handleToggleArchive = async (dbId: string, nextArchived: boolean) => {
     if (!userWallet) return;
     setArchiveBusyDbId(dbId);
@@ -111,21 +141,11 @@ function Dashboard() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Archive update failed");
-
-      const prodRes = await fetch(
-        `/api/products?address=${userWallet}&archived=${viewArchive}`
-      );
-      if (prodRes.ok) {
-        const prodData = await prodRes.json();
-        const products = (prodData.products || []) as ProductItem[];
-        setMyProducts(products);
-        setSelectedProductDbId((prev) =>
-          prev && products.some((p) => p.dbId === prev) ? prev : null
-        );
-      }
+      await refreshProducts();
+      pushToast(nextArchived ? "Product archived successfully." : "Product restored successfully.", "success");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Could not update archive";
-      alert(msg);
+      pushToast(msg, "error");
     } finally {
       setArchiveBusyDbId(null);
     }
@@ -136,7 +156,7 @@ function Dashboard() {
     const provider = (window as any).ethereum;
 
     if (!provider) {
-      alert("MetaMask not detected. Please refresh the page or unlock MetaMask.");
+      pushToast("MetaMask not detected. Please refresh the page or unlock MetaMask.", "error");
       return;
     }
 
@@ -146,12 +166,12 @@ function Dashboard() {
     
     const recipient = transferRecipient[dbId];
     if (!recipient) {
-      alert("Please enter a recipient address.");
+      pushToast("Please enter a recipient address.", "error");
       return;
     }
 
     if (blockchainId === "N/A") {
-      alert("This product does not have a valid Blockchain ID yet.");
+      pushToast("This product does not have a valid Blockchain ID yet.", "error");
       return;
     }
 
@@ -198,31 +218,21 @@ function Dashboard() {
           newOwnerAddress: recipient,
           transactionHash: tx.hash,
           blockchainId: String(transferId),
+          newOwnerRole: role === 2 ? 3 : role === 1 ? 2 : 3,
         }),
       });
 
       if (res.ok) {
-        alert("Transfer successful!");
-        if (userWallet) {
-          const freshRes = await fetch(
-            `/api/products?address=${userWallet}&archived=${viewArchive}`
-          );
-          if (freshRes.ok) {
-            const data = await freshRes.json();
-            const products = (data.products || []) as ProductItem[];
-            setMyProducts(products);
-            setSelectedProductDbId((prev) =>
-              prev && products.some((p) => p.dbId === prev) ? prev : null
-            );
-          }
-        }
+        pushToast("Transfer successful.", "success");
+        await refreshProducts();
+        setSelectedProductDbId(null);
       } else {
         const errorData = await res.json();
         throw new Error(errorData.error || "Failed to update database");
       }
     } catch (err: any) {
       console.error("Transfer failed:", err);
-      alert(`Transfer failed: ${err.reason || err.message}`);
+      pushToast(`Transfer failed: ${err.reason || err.message}`, "error");
     } finally {
       setIsTransferring(null);
     }
@@ -234,11 +244,36 @@ function Dashboard() {
       setUserWallet(address.toLowerCase());
     } catch (err) {
       console.error("Wallet connection failed:", err);
+      pushToast("Wallet connection failed.", "error");
     }
   };
 
-  const handleMarkAsSold = (id: string) => {
-    alert(`Product ${id} marked as sold!`);
+  const handleMarkAsSold = async (id: string) => {
+    if (!userWallet) {
+      pushToast("Please connect your wallet first.", "error");
+      return;
+    }
+    const confirmed = window.confirm("Confirm this product has been sold?");
+    if (!confirmed) return;
+
+    setIsMarkingSold(id);
+    try {
+      const res = await fetch("/api/products/sold", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId: id, walletAddress: userWallet }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to mark as sold");
+      pushToast("Product marked as sold.", "success");
+      await refreshProducts();
+      setSelectedProductDbId(null);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to mark as sold";
+      pushToast(msg, "error");
+    } finally {
+      setIsMarkingSold(null);
+    }
   };
 
   const selectedProduct =
@@ -320,7 +355,7 @@ function Dashboard() {
     );
   };
 
-  const renderSelectedProductCard = (
+  const renderProductModal = (
     recipientPlaceholder: string,
     transferLabel: string,
     showMarkAsSold: boolean
@@ -328,64 +363,67 @@ function Dashboard() {
     if (!selectedProduct) return null;
 
     return (
-      <div className="mt-6">
-        <ProductCard
-          {...selectedProduct}
-          dbId={selectedProduct.dbId}
-          archived={Boolean(selectedProduct.archived)}
-          isArchiveBusy={archiveBusyDbId === selectedProduct.dbId}
-          onToggleArchive={handleToggleArchive}
-          actionNode={
-            viewArchive ? (
-              <button
-                type="button"
-                onClick={() => setSelectedProductDbId(null)}
-                className="w-full py-2 bg-white border border-gray-200 text-gray-700 font-medium rounded-lg text-sm transition-all"
-              >
-                Cancel
-              </button>
-            ) : (
-              <div className="flex flex-col gap-3">
-                {showMarkAsSold && (
-                  <button
-                    onClick={() => handleMarkAsSold(selectedProduct.dbId)}
-                    className="w-full py-2.5 bg-green-600 text-white font-medium rounded-lg text-sm transition-all"
-                  >
-                    Mark as Sold
-                  </button>
-                )}
-                <input
-                  type="text"
-                  placeholder={recipientPlaceholder}
-                  value={transferRecipient[selectedProduct.dbId] || ""}
-                  onChange={(e) =>
-                    setTransferRecipient({
-                      ...transferRecipient,
-                      [selectedProduct.dbId]: e.target.value,
-                    })
-                  }
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 outline-none text-gray-900"
-                />
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedProductDbId(null)}
-                    className="w-full py-2 bg-white border border-gray-200 text-gray-700 font-medium rounded-lg text-sm transition-all"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => handleTransfer(selectedProduct)}
-                    disabled={isTransferring === selectedProduct.dbId}
-                    className="w-full py-2 bg-purple-600 text-white font-medium rounded-lg text-sm transition-all disabled:opacity-60"
-                  >
-                    {isTransferring === selectedProduct.dbId ? "Transferring..." : transferLabel}
-                  </button>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+        <div className="w-full max-w-2xl">
+          <ProductCard
+            {...selectedProduct}
+            dbId={selectedProduct.dbId}
+            archived={Boolean(selectedProduct.archived)}
+            isArchiveBusy={archiveBusyDbId === selectedProduct.dbId}
+            onToggleArchive={handleToggleArchive}
+            actionNode={
+              viewArchive ? (
+                <button
+                  type="button"
+                  onClick={() => setSelectedProductDbId(null)}
+                  className="w-full py-2 bg-white border border-gray-200 text-gray-700 font-medium rounded-lg text-sm transition-all"
+                >
+                  Cancel
+                </button>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {showMarkAsSold && (
+                    <button
+                      onClick={() => handleMarkAsSold(selectedProduct.dbId)}
+                      disabled={isMarkingSold === selectedProduct.dbId}
+                      className="w-full py-2.5 bg-green-600 text-white font-medium rounded-lg text-sm transition-all disabled:opacity-60"
+                    >
+                      {isMarkingSold === selectedProduct.dbId ? "Saving..." : "Mark as Sold"}
+                    </button>
+                  )}
+                  <input
+                    type="text"
+                    placeholder={recipientPlaceholder}
+                    value={transferRecipient[selectedProduct.dbId] || ""}
+                    onChange={(e) =>
+                      setTransferRecipient({
+                        ...transferRecipient,
+                        [selectedProduct.dbId]: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-gray-200 outline-none text-gray-900"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedProductDbId(null)}
+                      className="w-full py-2 bg-white border border-gray-200 text-gray-700 font-medium rounded-lg text-sm transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => handleTransfer(selectedProduct)}
+                      disabled={isTransferring === selectedProduct.dbId}
+                      className="w-full py-2 bg-purple-600 text-white font-medium rounded-lg text-sm transition-all disabled:opacity-60"
+                    >
+                      {isTransferring === selectedProduct.dbId ? "Transferring..." : transferLabel}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )
-          }
-        />
+              )
+            }
+          />
+        </div>
       </div>
     );
   };
@@ -479,7 +517,7 @@ function Dashboard() {
                     </button>
                   </div>
                   {renderProductTable(viewArchive ? "No archived products." : "No products found.")}
-                  {renderSelectedProductCard("Recipient Address (0x...)", "Transfer Ownership", false)}
+                  {renderProductModal("Recipient Address (0x...)", "Transfer Ownership", false)}
                 </section>
               </div>
             )}
@@ -500,7 +538,7 @@ function Dashboard() {
                     </button>
                   </div>
                   {renderProductTable(viewArchive ? "No archived products." : "No products found.")}
-                  {renderSelectedProductCard("Retailer Address...", "Transfer to Retailer", false)}
+                  {renderProductModal("Retailer Address...", "Transfer to Retailer", false)}
                 </section>
               </div>
             )}
@@ -521,13 +559,29 @@ function Dashboard() {
                     </button>
                   </div>
                   {renderProductTable(viewArchive ? "No archived products." : "No products available.")}
-                  {renderSelectedProductCard("Transfer to...", "Transfer", true)}
+                  {renderProductModal("Transfer to...", "Transfer", true)}
                 </section>
               </div>
             )}
           </div>
         )}
       </main>
+      <div className="fixed right-4 top-4 z-[60] space-y-2">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`min-w-[240px] max-w-[340px] rounded-lg border px-4 py-3 text-sm font-medium shadow-lg ${
+              toast.type === "success"
+                ? "border-green-200 bg-green-50 text-green-700"
+                : toast.type === "error"
+                  ? "border-red-200 bg-red-50 text-red-700"
+                  : "border-blue-200 bg-blue-50 text-blue-700"
+            }`}
+          >
+            {toast.message}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
