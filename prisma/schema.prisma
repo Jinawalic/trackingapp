@@ -1,0 +1,48 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            String    @id @default(uuid())
+  walletAddress String    @unique
+  role          Int       // 1 = Farmer, 2 = Distributor, 3 = Retailer
+  name          String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  products      Product[] @relation("ProductOwner")
+  historyEvents History[]
+}
+
+model Product {
+  id            String    @id @default(uuid())
+  blockchainId  String?   @unique // The ID assigned on the smart contract
+  trackingId    String?   @unique
+  name          String
+  ipfsHash      String
+  archived      Boolean   @default(false)
+  status        String    @default("CREATED") // CREATED, IN_TRANSIT, DELIVERED, SOLD
+  ownerId       String
+  owner         User      @relation("ProductOwner", fields: [ownerId], references: [id])
+  
+  history       History[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model History {
+  id          String   @id @default(uuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  action      String   // e.g., "Created", "Transferred", "Received", "Sold"
+  performedBy String   // User ID
+  user        User     @relation(fields: [performedBy], references: [id])
+  timestamp   DateTime @default(now())
+}
