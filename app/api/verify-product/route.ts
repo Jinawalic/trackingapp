@@ -35,7 +35,7 @@ export async function GET(req: Request) {
     }
 
     // Format history
-    const formattedHistory = product.history.map(h => {
+    const formattedHistory = product.history.map((h: (typeof product.history)[number]) => {
       let roleName = "Unknown";
       if (h.user.role === 1) roleName = "Farmer";
       else if (h.user.role === 2) roleName = "Distributor";
